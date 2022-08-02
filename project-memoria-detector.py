@@ -130,14 +130,11 @@ def check_tcp_options(tcp_opts, signature):
     if len(signature) != len(tcp_opts):
         return False
 
-    for i in range(0, len(signature)):
-        # The signatures do not match if the order of the options is not exact,
-        # or the option values do not match (except when it is set to 'None' in the signature)
-        if (tcp_opts[i][0] != signature[i][0]):
+    for i in range(len(signature)):
+        if tcp_opts[i][0] != signature[i][0]:
             return False
-        else:
-            if (signature[i][1] != None and signature[i][1] != tcp_opts[i][1]):
-                return False
+        if signature[i][1] not in [None, tcp_opts[i][1]]:
+            return False
     return True
 
 
@@ -147,7 +144,7 @@ This is a helper function for performing a TCP 3-way handshake
 
 def tcp_handshake(dst_host, dst_port, interface, custom_tcp_opts, timeout):
     # Use the default interface if none is provided
-    if interface == None:
+    if interface is None:
         interface = conf.iface
 
     # We can use a fixed ISN
@@ -159,7 +156,7 @@ def tcp_handshake(dst_host, dst_port, interface, custom_tcp_opts, timeout):
                  seq=seqn, ack=0, options=custom_tcp_opts)
 
     syn_ack = sr1(syn, timeout=timeout, iface=interface)
-    if syn_ack == None or TCP not in syn_ack or 'R' in syn_ack[TCP].flags:
+    if syn_ack is None or TCP not in syn_ack or 'R' in syn_ack[TCP].flags:
         return None
 
     seqn += 1
@@ -191,22 +188,43 @@ def icmpv4_probe(dst_host, timeout):
                        '\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27' \
                        '\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37'
 
-    reply = sr1(ip/ICMP(id=0xff, seq=1, type=icmptype_i)/Raw(load=std_icmp_payload),
-                filter='icmp[icmptype] = {}'.format(icmptype_o), timeout=timeout)
+    reply = sr1(
+        ip
+        / ICMP(id=0xFF, seq=1, type=icmptype_i)
+        / Raw(load=std_icmp_payload),
+        filter=f'icmp[icmptype] = {icmptype_o}',
+        timeout=timeout,
+    )
+
     if not reply:
         return (stack_name, MATCH_NO_REPLY)
 
     # If there is no reply to the second ICMP packet, either the target IP cannot be reached (or ICMP is
     # disabled), or we deal with the CycloneTCP stack that will accept only ICMP packets that have at least 1 byte
     # of data. To check for CycloneTCP, we craft such a packet: we expect the 1 byte of data back (+ optional padding).
-    reply = sr1(ip/ICMP(id=0xff, seq=1, type=icmptype_i), filter='icmp[icmptype] = {}'.format(icmptype_o), timeout=timeout)
+    reply = sr1(
+        ip / ICMP(id=0xFF, seq=1, type=icmptype_i),
+        filter=f'icmp[icmptype] = {icmptype_o}',
+        timeout=timeout,
+    )
+
     if not reply:
-        reply = sr1(ip/ICMP(id=0xff, seq=1, type=icmptype_i)/Raw(load=b'\x41'), filter='icmp[icmptype] = {}'.format(icmptype_o), timeout=timeout)
-        if reply and (reply.ttl >= 54 and reply.ttl <= 64):
-            if Raw in reply and Padding in reply and reply[Raw].load == b'\x41':
-                match = MATCH_MEDIUM
-                stack_name = 'CycloneTCP'
-                return (stack_name, match)
+        reply = sr1(
+            ip / ICMP(id=0xFF, seq=1, type=icmptype_i) / Raw(load=b'\x41'),
+            filter=f'icmp[icmptype] = {icmptype_o}',
+            timeout=timeout,
+        )
+
+        if (
+            reply
+            and (reply.ttl >= 54 and reply.ttl <= 64)
+            and Raw in reply
+            and Padding in reply
+            and reply[Raw].load == b'\x41'
+        ):
+            match = MATCH_MEDIUM
+            stack_name = 'CycloneTCP'
+            return (stack_name, match)
 
     # Next, we prepare a packet that should work with uIP/Contiki and PicoTCP
     icmp_raw = b'\x08\x01\x02'
@@ -216,7 +234,10 @@ def icmpv4_probe(dst_host, timeout):
     # If we get the expected reply it is either PicoTCP or uIP/Contiki:
     #   - we first check that the TTL value of the echo packet is changed into 64 for the reply packet
     #   - we then check the payload sequence of the echo reply packet
-    reply = sr1(ipv4_probe, filter='icmp[icmptype] = {}'.format(icmptype_o), timeout=timeout)
+    reply = sr1(
+        ipv4_probe, filter=f'icmp[icmptype] = {icmptype_o}', timeout=timeout
+    )
+
     if reply and (reply.ttl >= 54 and reply.ttl <= 64):
         if (hexlify(reply.load) == b'0001ff'):
             match = MATCH_HIGH
@@ -230,12 +251,24 @@ def icmpv4_probe(dst_host, timeout):
         _seq = 0xba
         # Nut/Net should reply to ICMP packets with incorrect IP and ICMP checksums
         ipv4_probe = IP(dst=dst_host, ttl=20, chksum=0xdead)/ICMP(id=_id, seq=_seq, type=icmptype_i, chksum=0xbeaf)
-        reply = sr1(ipv4_probe, filter='icmp[icmptype] = {}'.format(icmptype_o), timeout=timeout)
+        reply = sr1(
+            ipv4_probe,
+            filter=f'icmp[icmptype] = {icmptype_o}',
+            timeout=timeout,
+        )
+
         # TTL value must be 64 as well
-        if reply and (reply.ttl >= 54 and reply.ttl <= 64):
-            if (reply[ICMP].id == _id and reply[ICMP].seq == _seq and reply[ICMP].type == 0x00):
-                match = MATCH_MEDIUM
-                stack_name = 'Nut/Net'
+        if (
+            reply
+            and (reply.ttl >= 54 and reply.ttl <= 64)
+            and (
+                reply[ICMP].id == _id
+                and reply[ICMP].seq == _seq
+                and reply[ICMP].type == 0x00
+            )
+        ):
+            match = MATCH_MEDIUM
+            stack_name = 'Nut/Net'
 
     # Here we handle all other cases
     if match == MATCH_NO_MATCH:
@@ -253,21 +286,26 @@ def icmpv4_probe(dst_host, timeout):
 
         for pkt in pkts:
             # first, let's check the source and the destination IP
-            if IP in pkt and pkt[IP].src == dst_host and pkt[IP].dst == ip.src:
+            if (
+                IP in pkt
+                and pkt[IP].src == dst_host
+                and pkt[IP].dst == ip.src
+                and ICMP in pkt
+                and pkt[ICMP].type == 0x00
+                and pkt[ICMP].chksum == 0xFFFF
+            ):
                 # NDKTCPIP will reply with a TTL value of 255, the ICMP checksum will be 0xffff
-                if ICMP in pkt and pkt[ICMP].type == 0x00 and pkt[ICMP].chksum == 0xffff:
-                    # NDKTCPIP will reply with a TTL value of 255, the ICMP checksum will be 0xffff
-                    if (pkt.ttl >= 245 and pkt.ttl <= 255):
-                        match = MATCH_HIGH
-                        stack_name = 'NDKTCPIP'
-                        break
+                if (pkt.ttl >= 245 and pkt.ttl <= 255):
+                    match = MATCH_HIGH
+                    stack_name = 'NDKTCPIP'
+                    break
 
-                    # Nucleus Net AND NicheStack will reply with a TTL value of 64, the ICMP checksum will be 0xffff.
-                    # So far, we assume it is NicheStack.
-                    elif (pkt.ttl <= 64):
-                        match = MATCH_MEDIUM
-                        stack_name = 'NicheStack'
-                        break
+                # Nucleus Net AND NicheStack will reply with a TTL value of 64, the ICMP checksum will be 0xffff.
+                # So far, we assume it is NicheStack.
+                elif (pkt.ttl <= 64):
+                    match = MATCH_MEDIUM
+                    stack_name = 'NicheStack'
+                    break
 
     # We do an additional check for Nucleus Net: it will reply to a malformed ICMP packet that has only 1 byte in its header.
     # If we don't get a reply, NicheStack it is.
@@ -281,11 +319,17 @@ def icmpv4_probe(dst_host, timeout):
         pkts = t.stop()
         for pkt in pkts:
             # first, let's check the source and the destination IP
-            if IP in pkt and pkt[IP].src == dst_host and pkt[IP].dst == ip.src:
-                if ICMP in pkt and pkt[ICMP].type == 0x00 and pkt[ICMP].chksum == None:
-                    match = MATCH_MEDIUM
-                    stack_name = 'Nucleus Net'
-                    break
+            if (
+                IP in pkt
+                and pkt[IP].src == dst_host
+                and pkt[IP].dst == ip.src
+                and ICMP in pkt
+                and pkt[ICMP].type == 0x00
+                and pkt[ICMP].chksum is None
+            ):
+                match = MATCH_MEDIUM
+                stack_name = 'Nucleus Net'
+                break
 
     return (stack_name, match)
 
@@ -302,11 +346,26 @@ def httpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
     try:
         # We need to set up this rule in order to disable RST packets sent by the Linux kernel
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-I', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-I',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
         syn_ack = tcp_handshake(dst_host, dst_port, interface, {}, timeout)
-        if syn_ack == None:
+        if syn_ack is None:
             return (None, MATCH_NO_REPLY)
 
         seqn = syn_ack[TCP].ack
@@ -320,7 +379,12 @@ def httpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
 
         http_get = ip/TCP(dport=dst_port, sport=syn_ack[TCP].dport, flags='PA', seq=seqn, ack=ackn)/Raw(load=http_data)
         send(http_get, iface=interface)
-        response_pkts = sniff(filter='tcp and src %s' % dst_host, timeout=timeout*2, iface=interface)
+        response_pkts = sniff(
+            filter=f'tcp and src {dst_host}',
+            timeout=timeout * 2,
+            iface=interface,
+        )
+
 
         for pkt in response_pkts:
             if Raw in pkt:
@@ -332,68 +396,57 @@ def httpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
                     match_confidence = MATCH_HIGH
                     break
 
-                # uC/TCP-IP
                 elif b'Server: uC-HTTP-server' in pkt[Raw].load or b'Server: uC-HTTPs V2.00.00' in pkt[Raw].load:
                     stack_name = 'uC/TCP-IP'
                     match_confidence = MATCH_HIGH
                     break
 
-                # Nut/Net
                 elif b'Server: Ethernut' in pkt[Raw].load:
                     stack_name = 'Nut/Net'
                     match_confidence = MATCH_HIGH
                     break
 
-                # FNET
                 elif b'Server: FNET HTTP' in pkt[Raw].load:
                     stack_name = 'FNET'
                     match_confidence = MATCH_HIGH
                     break
 
-                # NicheStack
                 elif b'Server: InterNiche Technologies WebServer' in pkt[Raw].load:
                     stack_name = 'NicheStack'
                     match_confidence = MATCH_HIGH
                     break
 
-                # FreeBSD HTTP Servers
                 elif re.search(b'Server: \w.+\/\d.*\(FreeBSD\)', pkt[Raw].load) is not None \
                         or re.search(b'Server: httpd_\d.*\/FreeBSD', pkt[Raw].load) is not None:
                     stack_name = 'FreeBSD'
                     match_confidence = MATCH_HIGH
                     break
 
-                # FreeBSD protocol mismatch on SSH port
                 elif re.search(b'OpenSSH_\d.* FreeBSD-\d.*\\r\\nProtocol mismatch\.\\n', pkt[Raw].load, re.MULTILINE | re.IGNORECASE) is not None:
                     stack_name = 'FreeBSD'
                     match_confidence = MATCH_HIGH
                     break
 
-                # NettX
                 elif re.search(b'Server: (\w.+) \(\s?ThreadX\s?\)', pkt[Raw].load, re.MULTILINE | re.IGNORECASE) is not None:
                     stack_name = 'NettX'
                     match_confidence = MATCH_HIGH
                     break
 
-                # CMX-TCP/IP
                 elif b'Server: CMX TCP\/IP - WEB' in pkt[Raw].load or b'Server: CMX Systems WebServer' in pkt[Raw].load:
                     stack_name = 'CMX-TCP/IP'
                     match_confidence = MATCH_HIGH
                     break
 
-                # emNet
-                elif b'Server: embOS/IP' in pkt[Raw].load or b'Server: CMX Systems WebServer' in pkt[Raw].load:
+                elif b'Server: embOS/IP' in pkt[Raw].load:
                     stack_name = 'emNet'
                     match_confidence = MATCH_HIGH
                     break
 
-                # Keil TCPnet
                 elif re.search(b'Server: Keil-EWEB\/\d.+', pkt[Raw].load, re.MULTILINE | re.IGNORECASE) is not None:
                     stack_name = 'Keil TCPnet'
                     match_confidence = MATCH_HIGH
                     break
 
-                # lwIP
                 elif re.search(b'Server: lwIP/([\w._-]+)', pkt[Raw].load, re.MULTILINE | re.IGNORECASE) is not None:
                     stack_name = 'lwIP'
                     match_confidence = MATCH_HIGH
@@ -408,7 +461,7 @@ def httpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
 
             # Initiate another 3-way handshake
             syn_ack = tcp_handshake(dst_host, dst_port, interface, {}, timeout)
-            if syn_ack == None:
+            if syn_ack is None:
                 return (None, MATCH_NO_REPLY)
 
             seqn = syn_ack[TCP].ack
@@ -418,7 +471,12 @@ def httpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
             http_data = b'\x4f\x50\x54\x49\x4f\x4e\x53\x20\x2f\x20\x48\x54\x54\x50\x2f\x31\x2e\x30\x0d\x0a\x0d\x0a'
             http_pkt = ip/TCP(dport=dst_port, sport=syn_ack[TCP].dport, flags='PA', seq=seqn, ack=ackn)/Raw(load=http_data)
             send(http_pkt, iface=interface)
-            pkts = sniff(filter='tcp and src %s' % dst_host, timeout=timeout, iface=interface)
+            pkts = sniff(
+                filter=f'tcp and src {dst_host}',
+                timeout=timeout,
+                iface=interface,
+            )
+
 
             for pkt in pkts:
                 if Raw in pkt and pkt[Raw].load == b'HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n501 Not Implemented: Only GET and POST supported\r\n':
@@ -431,16 +489,31 @@ def httpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
             send(rst, iface=interface)
 
     except Exception as ex:
-        if 'Errno 19' in '%s' % ex:
-            print('\nERROR: the interface \'{}\' is invalid\n'.format(interface))
+        if 'Errno 19' in f'{ex}':
+            print(f"\nERROR: the interface \'{interface}\' is invalid\n")
         else:
-            print('\nERROR: {}\n'.format(ex))
+            print(f'\nERROR: {ex}\n')
 
     finally:
         # Cleanup the iptables rule
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-D', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-D',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
     return (stack_name, match_confidence)
 
@@ -458,35 +531,69 @@ def sshv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
     try:
         # We need to set up this rule in order to disable RST packets sent by the Linux kernel
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-I', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-I',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
         syn_ack = tcp_handshake(dst_host, dst_port, interface, {}, timeout)
-        if syn_ack == None:
+        if syn_ack is None:
             return (None, MATCH_NO_REPLY)
 
-        response_pkts = sniff(filter='tcp and src %s' % dst_host, timeout=timeout*2, iface=interface)
+        response_pkts = sniff(
+            filter=f'tcp and src {dst_host}',
+            timeout=timeout * 2,
+            iface=interface,
+        )
+
 
         for pkt in response_pkts:
-            if Raw in pkt:
-
-                # FreeBSD
-                if re.search(b'OpenSSH_(\d.*)\sFreeBSD', pkt[Raw].load, re.IGNORECASE):
-                    stack_name = 'FreeBSD'
-                    match_confidence = MATCH_HIGH
-                    break
+            if Raw in pkt and re.search(
+                b'OpenSSH_(\d.*)\sFreeBSD', pkt[Raw].load, re.IGNORECASE
+            ):
+                stack_name = 'FreeBSD'
+                match_confidence = MATCH_HIGH
+                break
 
     except Exception as ex:
-        if 'Errno 19' in '%s' % ex:
-            print('\nERROR: the interface \'{}\' is invalid\n'.format(interface))
+        if 'Errno 19' in f'{ex}':
+            print(f"\nERROR: the interface \'{interface}\' is invalid\n")
         else:
-            print('\nERROR: {}\n'.format(ex))
+            print(f'\nERROR: {ex}\n')
 
     finally:
         # Cleanup the iptables rule
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-D', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-D',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
     return (stack_name, match_confidence)
 
@@ -504,14 +611,34 @@ def ftpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
     try:
         # We need to set up this rule in order to disable RST packets sent by the Linux kernel
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-I', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-I',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
         syn_ack = tcp_handshake(dst_host, dst_port, interface, {}, timeout)
-        if syn_ack == None:
+        if syn_ack is None:
             return (None, MATCH_NO_REPLY)
 
-        response_pkts = sniff(filter='tcp and src %s' % dst_host, timeout=timeout*2, iface=interface)
+        response_pkts = sniff(
+            filter=f'tcp and src {dst_host}',
+            timeout=timeout * 2,
+            iface=interface,
+        )
+
 
         for pkt in response_pkts:
             if Raw in pkt:
@@ -547,16 +674,31 @@ def ftpv4_probe(dst_host, dst_port, interface, skip_iptables, timeout):
                     break
 
     except Exception as ex:
-        if 'Errno 19' in '%s' % ex:
-            print('\nERROR: the interface \'{}\' is invalid\n'.format(interface))
+        if 'Errno 19' in f'{ex}':
+            print(f"\nERROR: the interface \'{interface}\' is invalid\n")
         else:
-            print('\nERROR: {}\n'.format(ex))
+            print(f'\nERROR: {ex}\n')
 
     finally:
         # Cleanup the iptables rule
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-D', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-D',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
     return (stack_name, match_confidence)
 
@@ -579,12 +721,27 @@ def tcpv4_probe(dst_host, dst_port, interface, custom_tcp_opts, skip_iptables, t
     try:
         # We need to set up this rule in order to disable RST packets sent by the Linux kernel
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-I', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-I',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
         syn_ack = tcp_handshake(
             dst_host, dst_port, interface, custom_tcp_opts, timeout)
-        if syn_ack == None:
+        if syn_ack is None:
             return (None, MATCH_NO_REPLY)
 
         # Find a TCP options sequence that matches the response
@@ -598,7 +755,7 @@ def tcpv4_probe(dst_host, dst_port, interface, custom_tcp_opts, skip_iptables, t
 
         nutnet_tcp_opts_match = check_tcp_options(syn_ack[TCP].options, nutnet_tcp_opts)
 
-        
+
         cyclone_tcp_opts_match = check_tcp_options(syn_ack[TCP].options, cyclone_tcp_opts)
         timeout2 = timeout
 
@@ -691,30 +848,43 @@ def tcpv4_probe(dst_host, dst_port, interface, custom_tcp_opts, skip_iptables, t
                     match_confidence_urg = MATCH_LOW
 
         # If we have a discrepancy between TCP options and TCP Urgent flag fingerprint...
-        if stack_name_opts != stack_name_urg:
-            if match_confidence_opts >= match_confidence_urg:
-                stack_name = stack_name_opts
-                match_confidence = match_confidence_opts
-            else:
-                stack_name = stack_name_urg
-                match_confidence = match_confidence_urg
-
-        # If both fingerprints match the same stack...
-        else:
+        if stack_name_opts == stack_name_urg:
             stack_name = stack_name_opts
             match_confidence = match_confidence_opts + match_confidence_urg
 
-    except Exception as ex:
-        if 'Errno 19' in '%s' % ex:
-            print('\nERROR: the interface \'{}\' is invalid\n'.format(interface))
+        elif match_confidence_opts >= match_confidence_urg:
+            stack_name = stack_name_opts
+            match_confidence = match_confidence_opts
         else:
-            print('\nERROR: {}\n'.format(ex))
+            stack_name = stack_name_urg
+            match_confidence = match_confidence_urg
+
+    except Exception as ex:
+        if 'Errno 19' in f'{ex}':
+            print(f"\nERROR: the interface \'{interface}\' is invalid\n")
+        else:
+            print(f'\nERROR: {ex}\n')
 
     finally:
         # Cleanup the iptables rule
         if skip_iptables == False:
-            subprocess.check_call(['iptables', '-D', 'OUTPUT', '-p', 'tcp',
-                                   '--tcp-flags', 'RST', 'RST', '-s', '%s' % ip.src, '-j', 'DROP'])
+            subprocess.check_call(
+                [
+                    'iptables',
+                    '-D',
+                    'OUTPUT',
+                    '-p',
+                    'tcp',
+                    '--tcp-flags',
+                    'RST',
+                    'RST',
+                    '-s',
+                    f'{ip.src}',
+                    '-j',
+                    'DROP',
+                ]
+            )
+
 
     return (stack_name, match_confidence)
 
@@ -726,8 +896,14 @@ def is_target_alive(ip_addr, timeout):
                        b'\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27' \
                        b'\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37'
 
-    reply = sr1(ip/ICMP(id=0xff, seq=1, type=0x8)/Raw(load=std_icmp_payload), filter='icmp[icmptype] = {}'.format(0x0), timeout=timeout, verbose=0)
-    return False if not reply else True
+    reply = sr1(
+        ip / ICMP(id=0xFF, seq=1, type=0x8) / Raw(load=std_icmp_payload),
+        filter='icmp[icmptype] = 0',
+        timeout=timeout,
+        verbose=0,
+    )
+
+    return bool(reply)
 
 
 '''
